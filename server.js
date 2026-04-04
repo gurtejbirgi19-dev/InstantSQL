@@ -127,8 +127,9 @@ app.post('/api/create-checkout', async (req, res) => {
   const { plan } = req.body; // 'pro' or 'team'
 
   const prices = {
-    pro: { amount: 1900, name: 'QueryCraft Pro', description: 'Unlimited SQL queries per month' },
-    team: { amount: 4900, name: 'QueryCraft Team', description: 'Up to 5 seats, API access' }
+    starter: { amount: 900, name: 'InstantSQL Starter', description: '100 SQL queries per month' },
+    pro: { amount: 1900, name: 'InstantSQL Pro', description: 'Unlimited SQL queries per month' },
+    team: { amount: 4900, name: 'InstantSQL Team', description: 'Up to 5 seats, API access' }
   };
 
   const selected = prices[plan] || prices.pro;
