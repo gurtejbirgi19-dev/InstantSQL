@@ -1,17 +1,12 @@
 const express = require('express');
 const cors = require('cors');
-const Stripe = require('stripe');
 
 const app = express();
-const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 app.use(cors());
 app.use(express.json());
 
-// Simple in-memory usage tracker (resets on server restart)
-// For production, replace with a database like Supabase
 const usageTracker = {};
-
 const FREE_LIMIT = 10;
 
 function getUsageKey(ip) {
@@ -29,45 +24,39 @@ function incrementUsage(ip) {
   usageTracker[key] = (usageTracker[key] || 0) + 1;
 }
 
-// ── GENERATE SQL ──────────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', service: 'InstantSQL API' });
+});
+
+app.get('/api/usage', (req, res) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+  const used = getUsageCount(ip);
+  const remaining = Math.max(0, FREE_LIMIT - used);
+  res.json({ used, remaining, limit: FREE_LIMIT });
+});
+
 app.post('/api/generate', async (req, res) => {
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-  const { prompt, dbType, tableContext, isPro } = req.body;
+  try {
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    const { prompt, dbType, tableContext } = req.body;
 
-  if (!prompt) {
-    return res.status(400).json({ error: 'Prompt is required' });
-  }
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
 
-  // Check usage limit for free users
-  if (!isPro) {
     const usage = getUsageCount(ip);
     if (usage >= FREE_LIMIT) {
       return res.status(429).json({
         error: 'Free limit reached',
-        message: 'You have used all 10 free queries this month. Upgrade to Pro for unlimited queries.',
+        message: 'You have used all 10 free queries this month.',
         upgradeRequired: true
       });
     }
-  }
 
-  const systemPrompt = `You are QueryCraft, an expert SQL generator. Generate precise, production-ready SQL queries.
+    const systemPrompt = `You are InstantSQL, an expert SQL generator. Always respond in this exact JSON format with no markdown or backticks: {"sql": "THE_SQL_HERE", "explanation": "Brief plain English explanation"}. Use proper ${dbType || 'MySQL'} syntax.`;
 
-Always respond in this exact JSON format (no markdown, no backticks):
-{"sql": "THE_SQL_QUERY_HERE", "explanation": "Brief plain-English explanation of what the query does and how it works (2-3 sentences max)"}
+    const userMessage = `Database: ${dbType || 'MySQL'}\n${tableContext ? `Tables: ${tableContext}\n` : ''}Request: ${prompt}`;
 
-Rules:
-- Use proper ${dbType || 'MySQL'} syntax
-- Write clean, readable SQL with proper indentation
-- Add helpful inline comments for complex parts
-- The SQL should be immediately runnable`;
-
-  const userMessage = `Database: ${dbType || 'MySQL'}
-${tableContext ? `Tables/Context: ${tableContext}` : ''}
-Request: ${prompt}
-
-Generate the SQL query.`;
-
-  try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -84,7 +73,7 @@ Generate the SQL query.`;
     });
 
     if (!response.ok) {
-      throw new Error(`Anthropic API error: ${response.status}`);
+      return res.status(500).json({ error: 'AI service error. Please try again.' });
     }
 
     const data = await response.json();
@@ -94,79 +83,49 @@ Generate the SQL query.`;
     try {
       const clean = raw.replace(/```json|```/g, '').trim();
       const parsed = JSON.parse(clean);
-      sql = parsed.sql || '';
+      sql = parsed.sql || raw;
       explanation = parsed.explanation || '';
     } catch {
       sql = raw;
     }
 
-    // Increment usage for free users
-    if (!isPro) incrementUsage(ip);
-
-    // Return remaining queries for free users
-    const remaining = isPro ? null : FREE_LIMIT - getUsageCount(ip);
-
+    incrementUsage(ip);
+    const remaining = FREE_LIMIT - getUsageCount(ip);
     res.json({ sql, explanation, remaining });
 
   } catch (err) {
-    console.error('Generate error:', err);
-    res.status(500).json({ error: 'Failed to generate SQL. Please try again.' });
+    console.error('Error:', err);
+    res.status(500).json({ error: 'Server error. Please try again.' });
   }
 });
 
-// ── USAGE CHECK ───────────────────────────────────────────────
-app.get('/api/usage', (req, res) => {
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-  const used = getUsageCount(ip);
-  const remaining = Math.max(0, FREE_LIMIT - used);
-  res.json({ used, remaining, limit: FREE_LIMIT });
-});
-
-// ── STRIPE CHECKOUT ───────────────────────────────────────────
 app.post('/api/create-checkout', async (req, res) => {
-  const { plan } = req.body; // 'pro' or 'team'
-
-  const prices = {
-    starter: { amount: 900, name: 'InstantSQL Starter', description: '100 SQL queries per month' },
-    pro: { amount: 1900, name: 'InstantSQL Pro', description: 'Unlimited SQL queries per month' },
-    team: { amount: 4900, name: 'InstantSQL Team', description: 'Up to 5 seats, API access' }
-  };
-
-  const selected = prices[plan] || prices.pro;
-
   try {
+    const Stripe = require('stripe');
+    const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+    const { plan } = req.body;
+    const prices = {
+      starter: { amount: 900, name: 'InstantSQL Starter', description: '100 queries/month' },
+      pro: { amount: 1900, name: 'InstantSQL Pro', description: 'Unlimited queries' },
+      team: { amount: 4900, name: 'InstantSQL Team', description: '5 seats unlimited' }
+    };
+    const selected = prices[plan] || prices.pro;
+    const frontendUrl = process.env.FRONTEND_URL || 'https://project-l2lme.vercel.app';
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
-      line_items: [{
-        price_data: {
-          currency: 'usd',
-          product_data: {
-            name: selected.name,
-            description: selected.description,
-          },
-          unit_amount: selected.amount,
-          recurring: { interval: 'month' }
-        },
-        quantity: 1,
-      }],
+      line_items: [{ price_data: { currency: 'usd', product_data: { name: selected.name, description: selected.description }, unit_amount: selected.amount, recurring: { interval: 'month' } }, quantity: 1 }],
       mode: 'subscription',
-      success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}?success=true`,
-      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}?canceled=true`,
+      success_url: `${frontendUrl}?success=true`,
+      cancel_url: `${frontendUrl}?canceled=true`,
     });
-
     res.json({ url: session.url });
   } catch (err) {
     console.error('Stripe error:', err);
-    res.status(500).json({ error: 'Failed to create checkout session' });
+    res.status(500).json({ error: 'Payment error.' });
   }
 });
 
-// ── HEALTH CHECK ──────────────────────────────────────────────
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'QueryCraft API' });
-});
-
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`InstantSQL backend running on port ${PORT}`);
 });
