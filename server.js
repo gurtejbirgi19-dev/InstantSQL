@@ -166,7 +166,7 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'QueryCraft API' });
 });
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(`QueryCraft backend running on port ${PORT}`);
+  console.log(`InstantSQL backend running on port ${PORT}`);
 });
