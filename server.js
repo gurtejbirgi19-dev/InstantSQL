@@ -3,7 +3,13 @@ const cors = require('cors');
 
 const app = express();
 
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+app.options('*', cors());
 app.use(express.json());
 
 const usageTracker = {};
@@ -53,7 +59,7 @@ app.post('/api/generate', async (req, res) => {
       });
     }
 
-    const systemPrompt = `You are InstantSQL, an expert SQL generator. Always respond in this exact JSON format with no markdown or backticks: {"sql": "THE_SQL_HERE", "explanation": "Brief plain English explanation"}. Use proper ${dbType || 'MySQL'} syntax.`;
+    const systemPrompt = `You are InstantSQL, an expert SQL generator. Always respond in this exact JSON format with no markdown or backticks: {"sql": "THE_SQL_HERE", "explanation": "Brief plain English explanation of what the query does"}. Use proper ${dbType || 'MySQL'} syntax. Write clean readable SQL.`;
 
     const userMessage = `Database: ${dbType || 'MySQL'}\n${tableContext ? `Tables: ${tableContext}\n` : ''}Request: ${prompt}`;
 
@@ -73,6 +79,8 @@ app.post('/api/generate', async (req, res) => {
     });
 
     if (!response.ok) {
+      const err = await response.text();
+      console.error('Anthropic error:', err);
       return res.status(500).json({ error: 'AI service error. Please try again.' });
     }
 
